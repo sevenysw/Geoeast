@@ -1,0 +1,136 @@
+function spgdemo_seismic_irr()
+    addpath(genpath('../spgl1-2.1'));
+    addpath(genpath('../barylag1d'));
+    addpath(genpath('../commonfunction'));
+    addpath(genpath('../SeismicLab'));
+
+    % Initialize random number generators 
+    rand('state',0);
+    randn('state',0);
+
+    k = 3;
+    load ('../data/sea3d_2.mat');
+    f0 = D(257:512,:,1:64);
+    fshow = f0*0;
+    [nt,n2,n3] = size(f0);
+    
+%     for i=1:n3
+%         f0(:,:,i) = gain(f0(:,:,i),0.004,'agc',0.5,1);
+%     end   
+%     f0(isnan(f0)) = 0;
+        
+    l = x2'+0.0005; % original, np
+    p = x1'; % sampled, n2
+    np = length(x2);
+
+    [A, AT] = construct_sampler(k,l,p);
+    
+    b = f0;
+    
+    sigma = norm(f0(:))*0.02;       % Desired ||Ax - b||_2
+    opts = spgSetParms('verbosity',1);
+
+    v2m_b = @(x) reshape(x,[nt,n2,n3]);
+    m2v_b = @(x) x(:);
+    
+%     [Psi,PsiT,v2m_x,m2v_x] = construct_FFT(nt,np,n3);
+    [Psi,PsiT,v2m_x,m2v_x] = construct_Curvelet_3D(nt,np,n3);
+    
+    Ah = @ (x,mode)  Measure(A,AT,x,v2m_x,Psi,PsiT,v2m_b,m2v_x,m2v_b,mode);
+
+    xv = spg_bpdn(Ah, b(:), sigma, opts);
+    
+    f = PsiT(v2m_x(xv));
+    
+    c = 100;
+    seishow3D(f0,100,-c,c);
+    seishow3D(f,100,-c,c);
+    figure,imagesc(reshape(permute(f0,[1 3 2]),[nt,n2*n3]),[-c,c]);colormap gray;
+    figure,imagesc(reshape(permute(f,[1 3 2]),[nt,np*n3]),[-c,c]);colormap gray;
+end
+
+function y = Measure(A,AT,x,v2m_x,Psi,PsiT,v2m_b,m2v_x,m2v_b,mode)
+    if mode==1
+        y = m2v_b(A(PsiT(v2m_x(x))));
+    elseif mode==2
+        y = m2v_x(Psi(AT(v2m_b(x))));
+    end
+end
+
+function [A, AT] = construct_sampler(k,l,p)
+    A = @(x) barylag_k_mat3d(k,l,x,p,1);
+    AT= @(x) barylag_k_mat3d(k,l,x,p,2); % matrix transpose 
+%     AT= @(x) barylag_k_mat2d(k,p,x,l,1);   % inverse interpolation
+end
+
+function [Psi,PsiT,v2m_x,m2v_x] = construct_FFT(nt,nx,ny)
+    Psi = @(x) fftn(x)/sqrt(numel(x));
+    PsiT = @(x)ifftn(x)*sqrt(numel(x));
+    v2m_x = @(x) reshape(x,[nt,nx,ny]);
+    m2v_x = @(x) x(:);
+end
+
+function [Psi,PsiT,v2m_x,m2v_x] = construct_Curvelet_3D(nt,nx,ny)
+    addpath(genpath('../CurveLab-2.1.3/fdct3d/mex'));
+    Psi = @(x) fdct3d_forward(x);
+    PsiT = @(x) fdct3d_inverse(x);
+    
+    d = zeros(nt,nx,ny);
+    c = Psi(d);
+    nc = cellnum(c);
+    m2v_x = @(x) cell2vec(x,nc);
+    v2m_x = @(x) vec2cell(x,c);
+end
+
+function E = construct_Curvelet_weight(nt,nx,ny)
+    F = ones(nt,nx,ny);
+    X = fftshift(ifftn(F)) * (numel(F))^(1/3);
+    C = fdct3d_forward(X);
+    % Compute norm of curvelets (exact)
+    E = cell(size(C));
+    for s=1:length(C)
+        E{s} = cell(size(C{s}));
+        for w=1:length(C{s})
+            A = C{s}{w};
+            E{s}{w} = ones(size(A))*sqrt(sum(sum(sum(A.*conj(A))) / numel(A)));
+        end
+        if (s == length(C))
+            E{s}{w} = 5 * E{s}{w};
+        end
+    end
+
+end
+
+function C=vec2cell(v,C)
+    k = 1;
+    for s=1:length(C)
+      for w=1:length(C{s})
+          n1 = numel(C{s}{w});
+            C{s}{w}(:) = v(k:k+n1-1);
+          k = k+n1;
+      end
+    end
+end
+
+function nc = cellnum(C)
+    nc = 0;
+    for s=1:length(C)
+      for w=1:length(C{s})
+          nc = nc+ numel(C{s}{w});
+      end
+    end
+end
+
+function cfs = cell2vec(C,nc)
+    cfs =zeros(nc,1);
+    k = 1;
+    for s=1:length(C)
+      for w=1:length(C{s})
+          n1 = numel(C{s}{w});
+          cfs(k:k+n1-1) = C{s}{w}(:);
+          k = k+n1;
+      end
+    end
+end
+
+
